@@ -49,7 +49,7 @@ Long word short, we find that the db query retrieving a list of notifications fo
   - when new post arrived, we append the notif to the top of notif for audiences' post category's top notif?
   - graph database?
 
-### Iteration 0
+### Iteration 0, replace a loop of sql queries into a single one
 
 1) traces are spreaded into notification api's possible bottlenecks.
 2) we discovered 2 main bottlenecks, one is the sql query to fetch notifcation data, the other is the aggregator which aggregate the retreived data with related objects.
@@ -92,7 +92,58 @@ func (s *specialty) GetByUser(db *gorm.DB, userID string, latestOnly bool) ([]Sp
 }
 ```
 
-7) But it turns out the legacy code uses Gorm to query database, and we as a team are moving to Sqlx, so this is a big effort, we will deal with this in later iteration.
+7) one may notice the legacy code uses Gorm to query database, since we as a team are moving to Sqlx, a new implementation would use Sqlx instead.
+
+8) after converting a loop of sql queries to a single one, we now have the following implementation which retrieve a list of speciaties for a list of users
+
+##### aggregator/user.go
+```
+...
+	specialties, err := specialtyStore.GetUsersSpecialties(ctx, uids)
+...
+```
+
+##### store/specialty.go
+```
+func (s *specialtyStore) GetUsersSpecialties(ctx context.Context, userIDs []string) ([]*models.Specialty, error) {
+	
+  query := `
+		SELECT 
+			id,
+			application_id, 
+			user_id, 
+			specialty, 
+			ordinal, 
+			created_at, 
+			updated_at, 
+			deleted_at, 
+			badge 
+		FROM 
+			public.specialties 
+		WHERE 
+			user_id = ANY($1) 
+		ORDER BY 
+			ordinal ASC, 
+			updated_at DESC
+	`
+
+	...
+	err := db.Select(&specialties, query, pq.StringArray(userIDs))
+	...
+}
+```
+
+9) then here we achieve the first significant acceleration, we could see that the time consumed in ```aggregator.usersaggregator``` is down <b>from 357.4ms to 21.7ms</b>.
+
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/query_loop.png"></img>
+
 
 ### Iteration 1
 
