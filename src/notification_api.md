@@ -1,6 +1,6 @@
 # It takes over 100s to get a notification list
 
-<p style="font-weight: bold">Oct 28, 2024</p>
+<p style="font-weight: bold">Oct 28, 2024 ~ Nov ?, 2024</p>
 
 This is a thread on how we optimize notification api response time.
 
@@ -145,10 +145,11 @@ func (s *specialtyStore) GetUsersSpecialties(ctx context.Context, userIDs []stri
 " src="./img/query_loop.png"></img>
 
 
-### Iteration 1
+### Iteration 1, improve sql query which removes worst case scenario
 
 1) From the above trace structure, there is one more bottleneck which need to be dealt with, which is <b>store.me.getmynotifs</b>, a heavy sql query.
 
+##### notification list query
 ```
 SELECT * FROM (
   SELECT *, row_number() OVER (PARTITION BY type, param_id ORDER BY created_at DESC)
@@ -166,4 +167,62 @@ WHERE (r.row_number=1 OR r.type = ?)
 LIMIT ?
 ```
 
-2) The first we could see is there is Select within Select and a Partition
+2) As we could observe from the sql query plan, the ```Bitmap heap scan``` is the most resource heavy part which most likely caused by the use of ```PARTITION BY type, param_id ORDER BY created_at DESC```. 
+
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/query_plan.png"></img>
+
+3) from the original ```notification list query```, we could observe that the end goal is to retrieve notifications which are either 
+   1) the latest notification of a ```type, param_id``` group, or
+   2) a notification with a certain type
+   
+   for the first condition, we have found the use of ```DISTINCT ON (notification.type, param_id)``` give better performance than the use of ```PARTITION BY type, param_id```.
+
+  ```
+  EXAMPLE QUERY
+   ----------------------------------------------------------------------------------------------------
+    SELECT DISTINCT ON (notification.type, param_id) *
+    FROM notification
+    ORDER BY notification.type, param_id, created_at DESC;
+  ```
+
+   ```
+   QUERY PLAN for query using "DISTINCT ON (notification.type, param_id)"
+    ----------------------------------------------------------------------------------------------------
+      Unique  (cost=6101533.53..7917804.54 rows=54414 width=599)
+        ->  Gather Merge  (cost=6101533.53..7843040.25 rows=14952858 width=599)
+              Workers Planned: 2
+              ->  Sort  (cost=6100533.50..6116109.40 rows=6230358 width=599)
+                    Sort Key: type, param_id, created_at DESC
+                    ->  Parallel Seq Scan on notification  (cost=0.00..414330.58 rows=6230358 width=59
+   ``` 
+
+   This change <b>remarably removes worst case scenario and leads to 5~6% improvement in response time on average</b> since the scan no longer need to walk through the whole group but only need to return the first one in each group with the use of ```ORDER BY notification.type, param_id, created_at DESC```.
+
+   Note the above imrpovement is only possible since we parallelized requirements 3.1 and 3.2 into 2 sql queries.
+
+##### before <-> after
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/trace_compare.png"></img>
+
+4) with the use of ```DISTINCT ON (notification.type, param_id)```, we could now remove the use of ```row_number() OVER (PARTITION BY type, param_id ORDER BY created_at DESC)```, which <b>leads us to the removal of outer SELECT statement</b>.
+
+   we could now form a new query
+
+   ```
+   ```
+
+### Iteration 2, adding index after query optimization
+
