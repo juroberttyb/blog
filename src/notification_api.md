@@ -15,15 +15,18 @@ Long word short, we find that the db query retrieving a list of notifications fo
   border-radius: 12px;
 " src="./img/notification_db_query.png"></img>
 
+## Issue Description
+
+### Our apporaches
+
+1) [Remove Loop Queries](#remove-loop-queries)
+2) [Remove Worst-Case](#removes-worst-case)
+3) [Extreme Parallelization](#extreme-parallelization)
+4) [SQL Index](#sql-index)
+
 ### How we found the issue?
 
 - [Alert] api latency over 2.5s for 5min
-
-### What need to be done before taking actions?
-
-- bottleneck identification
-  - heavy use of tracing, to profile current logic flow
-- note in this case, we are dealing with a lot of legacy code, so heavy testing would be required
 
 ### What are the possible apporaches?
 
@@ -49,12 +52,13 @@ Long word short, we find that the db query retrieving a list of notifications fo
   - when new post arrived, we append the notif to the top of notif for audiences' post category's top notif?
   - graph database?
 
-### Iteration 0, replace a loop of sql queries into a single one
+## Remove Loop Queries
 
-1) traces are spreaded into notification api's possible bottlenecks.
-2) we discovered 2 main bottlenecks, one is the sql query to fetch notifcation data, the other is the aggregator which aggregate the retreived data with related objects.
-3) so first, we find the legacy code below to be one of the bottlenecks
+First, to find possible bottlenecks, we spread traces into notification api's bottleneck candidates, which led us to the discovery of 2 main bottlenecks and the following code
+- the sql query to fetch a list of notifcations belonging to a user
+- the aggregator function which aggregate the retreived data with related objects (eg: user, post, comments...)
 
+##### legacy code which contains a loop of sql queries
 ```
 for idx, user := range users {
     ...
@@ -66,8 +70,9 @@ for idx, user := range users {
 }
 ```
 
-4) here we find a db connection passed down in a for loop, not a good sign
-5) by looking into trace structure, we find the call at the bottom
+Here we could see a db connection passed down a for loop, not a good sign.
+
+By looking into traces, we could find the call at the bottom
 
 <img style="
   display: block;
@@ -78,7 +83,7 @@ for idx, user := range users {
   border-radius: 12px;
 " src="./img/notif_trace.png"></img>
 
-6) by more investigation, we findout that this for loop indeed use a new db connection to fetch user each iteration, so we decide to refactor this into a single db query
+Looking down the code, we findout that this loop create a new db connection each iteration, so we start to refactor this into a single query
 
 ```
 // GetByUser ...
@@ -92,14 +97,14 @@ func (s *specialty) GetByUser(db *gorm.DB, userID string, latestOnly bool) ([]Sp
 }
 ```
 
-7) one may notice the legacy code uses Gorm to query database, since we as a team are moving to Sqlx, a new implementation would use Sqlx instead.
+One familiar with Golang may notice the legacy code uses Gorm to query database, since we as a team are moving to Sqlx, a new implementation would use Sqlx instead.
 
-8) after converting a loop of sql queries to a single one, we now have the following implementation which retrieve a list of speciaties for a list of users
+After converting a loop of sql queries to a single one, we now have the following implementation which retrieve a list of speciaties for a list of users.
 
 ##### aggregator/user.go
 ```
 ...
-	specialties, err := specialtyStore.GetUsersSpecialties(ctx, uids)
+specialties, err := specialtyStore.GetUsersSpecialties(ctx, uids)
 ...
 ```
 
@@ -133,7 +138,9 @@ func (s *specialtyStore) GetUsersSpecialties(ctx context.Context, userIDs []stri
 }
 ```
 
-9) then here we achieve the first significant acceleration, we could see that the time consumed in ```aggregator.usersaggregator``` is down <b>from 357.4ms to 21.7ms</b>.
+Here we achieve the first significant acceleration! (a naive one I know)
+
+We could now see the time consumed in ```aggregator.usersaggregator``` is down <b>from 357.4ms to 21.7ms</b>.
 
 <img style="
   display: block;
@@ -145,9 +152,9 @@ func (s *specialtyStore) GetUsersSpecialties(ctx context.Context, userIDs []stri
 " src="./img/query_loop.png"></img>
 
 
-### Iteration 1, improve sql query which removes worst case scenario
+## Removes Worst-Case
 
-1) From the above trace structure, there is one more bottleneck which need to be dealt with, which is <b>store.me.getmynotifs</b>, a heavy sql query.
+There is one more bottleneck which we could improve, as we could see <b>store.me.getmynotifs</b> is a heavy sql query.
 
 ##### notification list query
 ```
@@ -167,7 +174,7 @@ WHERE (r.row_number=1 OR r.type = ?)
 LIMIT ?
 ```
 
-2) As we could observe from the sql query plan, the ```Bitmap heap scan``` is the most resource heavy part which most likely caused by the use of ```PARTITION BY type, param_id ORDER BY created_at DESC```. 
+We could observe from the sql query plan that ```Bitmap heap scan``` is the most resource heavy part which most likely caused by the use of ```PARTITION BY type, param_id ORDER BY created_at DESC```. 
 
 <img style="
   display: block;
@@ -178,11 +185,11 @@ LIMIT ?
   border-radius: 12px;
 " src="./img/query_plan.png"></img>
 
-3) from the original ```notification list query```, we could observe that the end goal is to retrieve notifications which are either 
+From the original ```notification list query```, we could observe that the end goal is to retrieve notifications which are either 
    1) the latest notification of a ```type, param_id``` group, or
-   2) a notification with a certain type
+   2) notifications of a specific type
    
-   for the first condition, we have found the use of ```DISTINCT ON (notification.type, param_id)``` give better performance than the use of ```PARTITION BY type, param_id```.
+   for the first condition, we have found the use of ```DISTINCT ON (notification.type, param_id)``` only need to reach for the first row in each group instead of scanning the whole group, and give other benefits over the use of ```PARTITION BY type, param_id```.
 
   ```
   EXAMPLE QUERY
@@ -203,7 +210,11 @@ LIMIT ?
                     ->  Parallel Seq Scan on notification  (cost=0.00..414330.58 rows=6230358 width=59
    ``` 
 
-   This change <b>remarably removes worst case scenario and leads to 5~6% improvement in response time on average</b> since the scan no longer need to walk through the whole group but only need to return the first one in each group with the use of ```ORDER BY notification.type, param_id, created_at DESC```.
+   This change brings us
+
+   -  removes remove O(n**2) worst case scenario to O(m*n), where m is the number of ```(notification.type, param_id)``` groups
+   -  leads to 6~7% improvement in average response time
+   -  allow for further parallel optimization within business logic
 
    Note the above imrpovement is only possible since we parallelized requirements 3.1 and 3.2 into 2 sql queries.
 
@@ -217,12 +228,58 @@ LIMIT ?
   border-radius: 12px;
 " src="./img/trace_compare.png"></img>
 
-4) with the use of ```DISTINCT ON (notification.type, param_id)```, we could now remove the use of ```row_number() OVER (PARTITION BY type, param_id ORDER BY created_at DESC)```, which <b>leads us to the removal of outer SELECT statement</b>.
+With the use of ```DISTINCT ON (notification.type, param_id)```, we could now remove the use of ```row_number() OVER (PARTITION BY type, param_id ORDER BY created_at DESC)```, which <b>leads us to the removal of outer SELECT statement</b>.
 
-   we could now form a new query
+   we could now form a new query (note requrement 3.2 is move to a standalone sql query)
 
    ```
+			SELECT *
+			FROM
+			(
+				SELECT 
+					DISTINCT ON 
+					(
+						notification.type, 
+						param_id
+					) 
+					...
+				FROM 
+					notification
+				WHERE 
+					...
+				ORDER BY 
+					notification.type, 
+					param_id, 
+					created_at DESC
+			) AS r
+			ORDER BY
+				r.created_at DESC
+			LIMIT 
+				?
    ```
 
-### Iteration 2, adding index after query optimization
+### Extreme Parallelization
+
+previous code -> after code, two layered parallel and safe thread control
+using go routines, waitGroup, withCancel, and err channel 
+
+##### before <-> after
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/serious_parallel.png"></img>
+
+## SQL Index
+
+After the sql queries are improved and more stable now, we could start adding indexes to improve performance.
+
+Types of index we could consider
+  
+  - ...
+  - ...
+
 
