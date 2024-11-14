@@ -258,7 +258,7 @@ With the use of ```DISTINCT ON (notification.type, param_id)```, we could now re
 				?
    ```
 
-### Extreme Parallelization
+## Extreme Parallelization
 
 previous code -> after code, two layered parallel and safe thread control
 using go routines, waitGroup, withCancel, and err channel 

@@ -2,7 +2,7 @@
 
 Welcome!
 
-This is a blog recording some interesting problems I faced or thinking about, most are technical, some are just part of my life.
+This is a blog recording some interesting problems I faced or am thinking about, most are technical, some are just part of my life.
 
 <img style="
   width: 360px;
@@ -19,16 +19,22 @@ Here is a json response which you would get if you make a request to Robert when
 ```
 {
     "skill": [
+      "Back End",
       "Golang",
+      "ML/AI",
       "GCP",
       "Kubernetes",
       "PostgreSQL",
       ...
     ],
     "interest": [
+      "3D",
+      "WGPU",
+      "Bevy",
+      "Three.js"
       "Rust",
       "Ethereum",
-      "Interesting Problem",
+      "Interesting Problems",
       "Ecosphere",
       "Making friends",
       "Piano",
@@ -39,6 +45,7 @@ Here is a json response which you would get if you make a request to Robert when
       "curry",
       "yogurt",
       "tea",
+      "longa",
       ...
     ]
     "language": [
@@ -52,7 +59,7 @@ Here is a json response which you would get if you make a request to Robert when
 }
 ```
 
-If you would like to have a drink with me, or just wanna be out together, or you have some interesting problems to work on and consider me to be a good fit, you can contact me with email
+If you would like to have a drink with me, or just wanna be out together, or you have some interesting problems to work on and consider me to be a good fit, you can contact me with email, or find me on [Twitter](https://x.com/zhuboxuan2), [LinkedIn](https://www.linkedin.com/in/robber26)
 - juroberttyb@gmail.com
 
 Anyway, happy to have you here, sincerely.
