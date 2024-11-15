@@ -19,10 +19,11 @@ Long word short, we find that the db query retrieving a list of notifications fo
 
 ### Our apporaches
 
-1) [Remove Loop Queries](#remove-loop-queries)
+1) [Refactor Loop Queries](#refactor-loop-queries)
 2) [Remove Worst-Case](#removes-worst-case)
-3) [Extreme Parallelization](#extreme-parallelization)
+3) [Parallelization](#parallelization)
 4) [SQL Index](#sql-index)
+5) [Read Replica](#read-replica)
 
 ### How we found the issue?
 
@@ -52,7 +53,7 @@ Long word short, we find that the db query retrieving a list of notifications fo
   - when new post arrived, we append the notif to the top of notif for audiences' post category's top notif?
   - graph database?
 
-## Remove Loop Queries
+## Refactor Loop Queries
 
 First, to find possible bottlenecks, we spread traces into notification api's bottleneck candidates, which led us to the discovery of 2 main bottlenecks and the following code
 - the sql query to fetch a list of notifcations belonging to a user
@@ -214,7 +215,7 @@ From the original ```notification list query```, we could observe that the end g
 
    -  removes remove O(n**2) worst case scenario to O(m*n), where m is the number of ```(notification.type, param_id)``` groups
    -  leads to 6~7% improvement in average response time
-   -  allow for further parallel optimization within business logic
+   -  <b>IMPORTANT</b> allow for further parallel optimization, see [Parallelized SQL](#parallelized-sql) section
 
    Note the above imrpovement is only possible since we parallelized requirements 3.1 and 3.2 into 2 sql queries.
 
@@ -258,10 +259,117 @@ With the use of ```DISTINCT ON (notification.type, param_id)```, we could now re
 				?
    ```
 
-## Extreme Parallelization
+## Parallelization
 
-previous code -> after code, two layered parallel and safe thread control
-using go routines, waitGroup, withCancel, and err channel 
+Here we could see the code which implments parallelization for function ```notification aggregator```, but not in a very efficient way
+
+
+##### notification aggregator
+```
+	um := make(map[string]models.UserSimple)
+	uc := make(chan error)
+
+	pm := make(map[string]models.Post)
+	pc := make(chan error)
+
+	rm := make(map[int64]models.ReadNotif)
+	rc := make(chan error)
+
+	go threadedReadMap(rc, rm, selfId)
+
+	...
+
+  go threadedPostMap(ctx, pc, pm, selfId, postIds)
+  if err := <-pc; err != nil {
+    return err
+  }
+
+  ...
+
+  go threadedUserMap(ctx, uc, um, selfId, userIds)
+  if err := <-uc; err != nil {
+    return err
+  }
+
+  ...
+
+	if err := <-rc; err != nil {
+		return err
+	}
+```
+
+Here we could notice 3 major issues
+
+  1) go routines are spawned, but 2 out of 3 started waiting for their respective error channels, which leads to no speed gain
+  2) instead of creating a ```threaded version``` of a function, go supports native threading in a more maintainable way to achieve parallelization.
+
+      insteaf of threadedPostMap, we should do
+      
+      ##### better parallel
+      ```
+      go func(...) {
+          returnValue, err := postMap(...)
+          if err != nil {
+              errCh <- err
+          }
+      }(...)
+      ```
+
+      and instead of waiting for each err respectively and sequentially, this is how we could do
+
+      ##### improved err collection
+      ```
+      go func() {
+          aggregateNotifGroup.Wait()
+          close(errCh)
+      }()
+
+      if err, exist := <-errCh; exist && err != nil {
+          if exist {
+            logging.Errorw(ctx, "failed to get notification list", "err", err)
+            return nil, err
+          }
+      }
+      ```
+
+      now we would receive a done signal to know the child routines run correctly, which achieves better parallelization.
+
+  3) better error collection
+
+      as mentioned above, with the inclusion of done channel we could wait after spawning multiple go routines.
+
+      ##### parent go routine
+
+      ```
+      ctx, cancel := context.WithCancel(ctx)
+      defer cancel()
+
+      errCh := make(chan error)
+      go func(errCh chan<- error) {
+        ...
+      }(errCh)
+      ```
+
+      ##### child go routines
+    
+      ```
+      for ... {
+        select {
+        case <-ctx.Done():
+          return
+        default:
+          ...
+          if err != nil {
+            logging.Errorw(ctx, ...)
+            errCh <- err
+          }
+      }
+      ...
+      ```
+
+      this patterns ensure we don't get zombie threads from parent routines failing before child routines.
+
+  So, after the adoption of go routines, waitGroup, withCancel pattern, and err channel, we have better appoaches to the 3 issues and achieve a much better result. 
 
 ##### before <-> after
 <img style="
@@ -273,13 +381,93 @@ using go routines, waitGroup, withCancel, and err channel
   border-radius: 12px;
 " src="./img/serious_parallel.png"></img>
 
+  Now all precedures below ```aggregator.notification.notifaggregator``` are parallelized, but because it itself is also parallelized where it is called, its trace is very long, the real heavy logic part of it only take place after ```dev.store.me.getmynotifs``` is done.
+
 ## SQL Index
 
-After the sql queries are improved and more stable now, we could start adding indexes to improve performance.
+Now, the greatest bottleneck, ```dev.store.getmynotifs```
+
+Let's see the query again, see what we could do
+
+##### heaviest query
+```
+SELECT * FROM 
+(
+  SELECT 
+    DISTINCT ON 
+    (
+      notification.type, 
+      param_id
+    ) 
+    *
+  FROM 
+    notification
+  WHERE 
+    is_removed=false
+    AND 
+    (
+      created_at>? 
+      OR 
+      type='0'
+    )
+    AND 
+    created_at<?
+    AND 
+    (
+      owner_id=? 
+      OR 
+      routing_type IN (?)
+    )
+    AND 
+    creator_id!=?
+    AND 
+    type IN (?)
+    AND 
+    (
+      category IS NULL 
+      OR 
+      category IN (?)
+    )
+  ORDER BY 
+    notification.type, 
+    param_id, 
+    created_at DESC
+) AS r
+ORDER BY
+  r.created_at DESC
+LIMIT 
+  ?
+```
+
+##### using index
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/query_plan_compare.png"></img>
 
 Types of index we could consider
   
   - ...
   - ...
 
+Now, since I am not a sql database expert, I leverage the help of one of our most important big brains... ChatGPT!
 
+After some chat with him (her? it?), I eventually take two of his suggestions.
+
+  1) ...
+  2) ...
+
+Since the main bottleneck for our sql query is for the getting notifications part not the superLike part and it is parallelized so not affecting overall response time, we would only add indexes for the former query.
+
+Note adding indexes itself also incur extra execution time for writting to the table, so ideally we are not going to see lots of them if there is no clear improvement.
+
+## Read Replica
+
+Now, since this is a heavy sql query which does not involve any write operation, we could consider moving its work to a read only sql replica.
+  
+  - ...
+  - ...
