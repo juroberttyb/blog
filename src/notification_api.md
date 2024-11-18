@@ -1,8 +1,22 @@
 # It takes over 100s to get a notification list
 
-<p style="font-weight: bold">Oct 28, 2024 ~ Nov ?, 2024</p>
+<p style="font-weight: bold">Oct 28, 2024 ~ Nov 18, 2024</p>
 
-This is a thread on how we optimize notification api response time.
+This is a thread on how we optimize notification api response time from 
+
+
+- <b>worst case over 100s to under 1s</b>
+- <b>25% acceleration in average response time</b>
+
+##### Final Result
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/notif_final_trace.png"></img>
 
 Long word short, we find that the db query retrieving a list of notifications for a given user is the bottleneck for this api.
 
@@ -23,7 +37,8 @@ Long word short, we find that the db query retrieving a list of notifications fo
 2) [Remove Worst-Case](#removes-worst-case)
 3) [Parallelization](#parallelization)
 4) [SQL Index](#sql-index)
-5) [Read Replica](#read-replica)
+5) [Max Heap](#max-heap)
+6) [Future Work](#future-work)
 
 ### How we found the issue?
 
@@ -175,7 +190,7 @@ WHERE (r.row_number=1 OR r.type = ?)
 LIMIT ?
 ```
 
-We could observe from the sql query plan that ```Bitmap heap scan``` is the most resource heavy part which most likely caused by the use of ```PARTITION BY type, param_id ORDER BY created_at DESC```. 
+We could observe from the sql query plan that ```Bitmap heap scan``` is the most resource heavy part which most likely caused by full table scan, which we will deal with in later section, in preparation for it, we will first improve the use of ```PARTITION BY type, param_id ORDER BY created_at DESC```. 
 
 <img style="
   display: block;
@@ -215,7 +230,7 @@ From the original ```notification list query```, we could observe that the end g
 
    -  removes remove O(n**2) worst case scenario to O(m*n), where m is the number of ```(notification.type, param_id)``` groups
    -  leads to 6~7% improvement in average response time
-   -  <b>IMPORTANT</b> allow for further parallel optimization, see [Parallelized SQL](#parallelized-sql) section
+   -  simplify the query and make it easier to add indexes which accelerate the query, see [SQL Index](#sql-index) section
 
    Note the above imrpovement is only possible since we parallelized requirements 3.1 and 3.2 into 2 sql queries.
 
@@ -439,7 +454,38 @@ LIMIT
   ?
 ```
 
-##### using index
+By checking the table, we notice there is already an index created on the ```created_at``` field, but it is not fully utilized.
+After further investigation, we find out that there are two main reasons.
+
+  1) extra conditions prevent the use of it
+
+  ```
+  (
+    created_at>? 
+    OR 
+    type='0' ### we should move this to another query 
+  )
+  ```
+
+  2) ```is_removed=false``` is a common condition used with ```created_at``` comparison, but it is not included in the condition for the index.
+
+  So we improve the query's response time with the following two modification, first we added the condition to index ```notification_created_at```
+
+  ##### adding where condition to index
+  ```
+  CREATE INDEX IF NOT EXISTS notification_created_at
+      ON public.notification USING btree
+      (created_at ASC NULLS LAST)
+      TABLESPACE pg_default
+      WHERE is_removed = false;
+  -- Index: notification_creator_id_idx
+  ```
+
+  Second we separate the retrieval of rows with ```type='0'``` to another query to enable the utilization of index for ```created_at``` comparison in this sql query.
+
+  The two modifications leads us to another 13% improvement in response time!
+
+##### not using index VS using index
 <img style="
   display: block;
   margin-left: auto;
@@ -449,25 +495,116 @@ LIMIT
   border-radius: 12px;
 " src="./img/query_plan_compare.png"></img>
 
-Types of index we could consider
-  
-  - ...
-  - ...
+##### real world example
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/index_0.png"></img>
 
-Now, since I am not a sql database expert, I leverage the help of one of our most important big brains... ChatGPT!
+##### traces
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/sql_improved_again.png"></img>
 
-After some chat with him (her? it?), I eventually take two of his suggestions.
+There is one more thing we might want to index on which is the sorting part
 
-  1) ...
-  2) ...
+```
+  WHERE
+    is_removed=false
+    ...
+  ORDER BY 
+    notification.type, 
+    param_id, 
+    created_at DESC
+```
 
-Since the main bottleneck for our sql query is for the getting notifications part not the superLike part and it is parallelized so not affecting overall response time, we would only add indexes for the former query.
+However with the addition of this index, only ~3% performance gain is achieved, which indicates this index is optional.
 
-Note adding indexes itself also incur extra execution time for writting to the table, so ideally we are not going to see lots of them if there is no clear improvement.
+## Max Heap
 
-## Read Replica
+Collecting from different channels result in a list with uncertain length, but we do have a count limit specified in api parameter.
 
-Now, since this is a heavy sql query which does not involve any write operation, we could consider moving its work to a read only sql replica.
-  
-  - ...
-  - ...
+A sort would require O(n*log(n)), but we don't need to do sorting here to meet the requirement, as we only need the ```count``` latest notifications.
+
+First we implement a max heap for ```Notif```.
+
+```
+type NotifHeap []*Notif
+
+func (h NotifHeap) Len() int { return len(h) }
+
+// Reverse the logic to create a max-heap.
+func (h NotifHeap) Less(i, j int) bool { return h[i].CreateAt > h[j].CreateAt }
+
+func (h NotifHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *NotifHeap) Push(x interface{}) {
+	*h = append(*h, x.(*Notif))
+	for i := h.Len() - 1; i != 0 && h.Less((i-1)/2, i); i = (i - 1) / 2 {
+		h.Swap((i-1)/2, i)
+	}
+}
+
+func (h *NotifHeap) Pop() interface{} {
+	x := (*h)[h.Len()-1]
+	*h = (*h)[:h.Len()-1]
+	return x
+}
+```
+
+Then in ```notification aggregator```, we maintain the heap during collection of notifications from different go routines.
+
+```
+	h := models.NotifHeap{}
+	heap.Init(&h)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		default:
+		}
+
+		notif, exist := <-notificationCh
+		if !exist {
+			break
+		}
+		h.Push(notif)
+		if len(h) > count {
+			h.Pop()
+		}
+	}
+	...
+
+	for len(h) > 0 {
+		nt := h.Pop().(*models.Notif)
+		...
+		notifications = append(notifications, nt)
+	}
+```
+
+Since build heap is O(n), and iterating over a heap with ```count``` elements is only O(count), we achieve O(n+count) complexity for this logic instead of O(n*log(n)).
+
+This simple improvement allows us to more effectively collect notifications from different go routines and <b>leads us to ~40% acceleration</b> in ```notification aggregator```!
+
+## Future Work
+
+Thank you for reading this far, if you are wondering why I did not mention caching, the reason is this post's goal is the direct improvement to notification api response time, caching is more focused on reducing average response time.
+And since caching itself is a big enough topic involving refactoring the whole api structure, we think it deserves to be a post itself!
+
+What quickly comes to mind that need to be considered when adding caching
+
+  1) separate caching instead of caching whole list
+  2) update to cached value on events like notification list insert/delete/update...
+  3) distributed redis lock or database lock to avoid race condition across pods
+
+
