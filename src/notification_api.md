@@ -18,7 +18,11 @@ This is a thread on how we optimize notification api response time from
   border-radius: 12px;
 " src="./img/notif_final_trace.png"></img>
 
-Long word short, we find that the db query retrieving a list of notifications for a given user is the bottleneck for this api.
+## Issue Description
+
+A notification api is responsible for returning a user's notifications, such as new message, post response, new post..., but it takes over 100s to get the response in some cases and the overall response time is too long.
+
+We find that the db query retrieving a list of notifications for a given user is the bottleneck for this api.
 
 <img style="
   display: block;
@@ -29,9 +33,7 @@ Long word short, we find that the db query retrieving a list of notifications fo
   border-radius: 12px;
 " src="./img/notification_db_query.png"></img>
 
-## Issue Description
-
-### Our apporaches
+## Our apporaches
 
 1) [Refactor Loop Queries](#refactor-loop-queries)
 2) [Remove Worst-Case](#removes-worst-case)
@@ -39,34 +41,6 @@ Long word short, we find that the db query retrieving a list of notifications fo
 4) [SQL Index](#sql-index)
 5) [Max Heap](#max-heap)
 6) [Future Work](#future-work)
-
-### How we found the issue?
-
-- [Alert] api latency over 2.5s for 5min
-
-### What are the possible apporaches?
-
-- db profiling, to maximize the performance of db query
-  - how many times do we access disk?
-  - parallel db connection, to speed up data retrieval
-  - sql database upgrade, cpu amd mem capacity
-  - data transmission
-    - symbolic return, compress before returning from database
-  - db index, to maximize the search/query speed of notification table
-- parallel computation, to speed up business logic
-  - synchronization, to ensure correctness
-  - containerize, to allow pod horizontal scaling
-- caching, to reduce number of api calls
-  - inspector, to check if cached value is out-of-date
-  - partial update, to avoid redundant update to up-to-date content
-- smart sort, to optimize user experience, what they want to see?
-- algorithm, is there a lower time complexity approach to the problem?
-- notification microservice enhancement, the actual sender logic improvement
-  - vertically, is it possible to make it faster?
-  - horizontally, how less time a fcm message need to wait before sent
-- system level, notification now is pull based, how about push based?
-  - when new post arrived, we append the notif to the top of notif for audiences' post category's top notif?
-  - graph database?
 
 ## Refactor Loop Queries
 
