@@ -104,6 +104,47 @@ After more investigation, we found that although much of our service is deployed
 
 Without a working scaler, whatever the current pods are specified on service provisioning would be the one lasted forever.
 
+##### Correct Scaler Example
+```
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ...
+  labels:
+    app: ...
+spec:
+  scaleTargetRef:
+    ### This should match deploy version below for scaling to work correctly ###
+    apiVersion: apps/v1
+    kind: Deployment
+    name: apen
+  minReplicas: {{ .Values.scaling.minReplicas }}
+  maxReplicas: {{ .Values.scaling.maxReplicas }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.scaling.cpuAverageUtilization }}
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.scaling.memoryAverageUtilization }}
+```
+
+##### Deploy Chart Example
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ...
+  labels:
+    app: ...
+```
+
 After fixing it, we save ourself ~60% of Kubernetes Engine fee. (Sounds really dumb but we really only have a handful of dev back then.)
 
 With the introduction of IAC we now also are able to provision/destroy Dev and Staging clusters much more easily.
@@ -134,6 +175,39 @@ Since we adopt a microservice architecture, this has saved us a whole lot of tim
 
 For CI, we use golang mockery to generate dependency mockings.
 
+##### part of our workflow
+```
+github-production:
+	gcloud auth configure-docker
+	docker push ${IMAGE}
+	docker push asia.gcr.io/${PROJECT_ID}/${SERVICE_NAME}:latest
+	gcloud components install kubectl
+	gcloud container clusters get-credentials apen-dev --region ${REGION} --project ${PROJECT_ID}
+	kubectl rollout restart deployment/${DEPLOY_NAME}
+	kubectl rollout status deployment/${DEPLOY_NAME}
+
+mocks:
+	./mockery --all --inpackage
+
+unit-test:
+	go test -v -cover -short ./...
+
+integration-test:
+	go test -v -cover -run Integration ./...
+
+# Add iam roles to allow managing k8s cluster
+auth-github-to-gcp:
+	gcloud iam workload-identity-pools create "github" \
+	--project="${PROJECT_ID}" \
+	--location="global" \
+	--display-name="GitHub Actions Pool"
+	gcloud iam workload-identity-pools providers create-oidc ...
+	gcloud iam service-accounts add-iam-policy-binding ...
+
+full-test:
+	go test -v -cover ./...
+```
+
 Since integration tests are hard to maintain, we leave it out for now and consider this better handled with QA team.
 
 ## In Cluster Caching
@@ -157,5 +231,73 @@ This also saves us ~60% fee for message queue cost.
 Some of the services don't always need to be alive, like video compression or broadcasting messages.
 
 Instead of containerizing those service and make them a workload in Kubernetes Engine, we could instead deploy them as serverless services using services like ```GCP cloud run```.
+
+##### Example Dockerfile for Serverless
+```
+# Get started with a build env with Rust nightly
+FROM rustlang/rust:nightly-bullseye as builder
+
+# If you’re using stable, use this instead
+# FROM rust:1.74-bullseye as builder
+
+# Install cargo-binstall, which makes it easier to install other
+# cargo extensions like cargo-leptos
+RUN wget https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz
+RUN tar -xvf cargo-binstall-x86_64-unknown-linux-musl.tgz
+RUN cp cargo-binstall /usr/local/cargo/bin
+
+# Install cargo-leptos
+# RUN cargo binstall cargo-leptos -y
+RUN cargo install --locked cargo-leptos
+
+# Add the WASM target
+RUN rustup target add wasm32-unknown-unknown
+
+# Make an /app dir, which everything will eventually live in
+RUN mkdir -p /app
+WORKDIR /app
+COPY . .
+
+# Build the app
+RUN cargo leptos build --release -vv
+
+FROM debian:bookworm-slim as runtime
+WORKDIR /app
+RUN apt-get update -y \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && apt-get autoremove -y \
+  && apt-get clean -y \
+  && rm -rf /var/lib/apt/lists/*
+
+# -- NB: update binary name from "admin" to match your app name in Cargo.toml --
+# Copy the server binary to the /app directory
+COPY --from=builder /app/target/release/admin /app/
+
+# /target/site contains our JS/WASM/CSS, etc.
+COPY --from=builder /app/site /app/site
+
+# Copy Cargo.toml if it’s needed at runtime
+COPY --from=builder /app/Cargo.toml /app/
+
+# Set any required env variables and
+ENV RUST_LOG="info"
+ENV LEPTOS_SITE_ADDR="0.0.0.0:8080"
+ENV LEPTOS_SITE_ROOT="site"
+ENV DATABASE_URL = "postgres://postgres:Fuchiisawesome!%40%23@127.0.0.1/ads"
+EXPOSE 8080
+
+# -- NB: update binary name from "admin" to match your app name in Cargo.toml --
+# Run the server
+CMD ["/app/admin"]
+```
+
+##### Example Deploy Workflow (Manual Revision)
+```
+image:
+	docker build -t ${TAG} .
+	docker tag ${TAG} ${IMAGE}
+	docker tag ${TAG} asia.gcr.io/${PROJECT_ID}/${SERVICE_NAME}:latest
+	docker push asia.gcr.io/${PROJECT_ID}/${SERVICE_NAME}:latest
+```
 
 After moving them out of clusters, we save another 10% on Kubernetes Engine fees for ourselve.
