@@ -2,13 +2,14 @@
 
 <p style="font-weight: bold">Oct 28, 2024 ~ Nov 18, 2024</p>
 
-This is a thread on how we optimize notification api response time from 
+## Result
 
+This is a post on how we optimize notification api response time from 
 
 - <b>worst case over 100s to under 1s</b>
 - <b>25% acceleration in average response time</b>
 
-##### Final Result
+##### trace before <-> trace after
 <img style="
   display: block;
   margin-left: auto;
@@ -33,13 +34,13 @@ We find that the db query retrieving a list of notifications for a given user is
   border-radius: 12px;
 " src="./img/notification_db_query.png"></img>
 
-## Our apporaches
+## Our approaches
 
 1) [Refactor Loop Queries](#refactor-loop-queries)
-2) [Remove Worst-Case](#removes-worst-case)
+2) [Remove Worst-Case](#remove-worst-case)
 3) [Parallelization](#parallelization)
 4) [SQL Index](#sql-index)
-5) [Max Heap](#max-heap)
+5) [Min Heap](#min-heap)
 6) [Future Work](#future-work)
 
 ## Refactor Loop Queries
@@ -142,7 +143,7 @@ We could now see the time consumed in ```aggregator.usersaggregator``` is down <
 " src="./img/query_loop.png"></img>
 
 
-## Removes Worst-Case
+## Remove Worst-Case
 
 There is one more bottleneck which we could improve, as we could see <b>store.me.getmynotifs</b> is a heavy sql query.
 
@@ -218,7 +219,7 @@ From the original ```notification list query```, we could observe that the end g
   border-radius: 12px;
 " src="./img/trace_compare.png"></img>
 
-With the use of ```DISTINCT ON (notification.type, param_id)```, we could now remove the use of ```row_number() OVER (PARTITION BY type, param_id ORDER BY created_at DESC)```, which <b>leads us to the removal of outer SELECT statement</b>.
+With the use of ```DISTINCT ON (notification.type, param_id)```, we could now remove the use of ```row_number() OVER (PARTITION BY type, param_id ORDER BY created_at DESC)```, which does full table scan in worst case scenario.
 
    we could now form a new query (note requrement 3.2 is move to a standalone sql query)
 
@@ -443,9 +444,9 @@ After further investigation, we find out that there are two main reasons.
 
   2) ```is_removed=false``` is a common condition used with ```created_at``` comparison, but it is not included in the condition for the index.
 
-  So we improve the query's response time with the following two modification, first we added the condition to index ```notification_created_at```
+  So we improve the query's response time with the following two modification, first we added the condition to ```notification_created_at``` index
 
-  ##### adding where condition to index
+  ##### new index on created_at column
   ```
   CREATE INDEX IF NOT EXISTS notification_created_at
       ON public.notification USING btree
@@ -491,6 +492,8 @@ After further investigation, we find out that there are two main reasons.
 
 There is one more thing we might want to index on which is the sorting part
 
+
+##### order in query
 ```
   WHERE
     is_removed=false
@@ -501,36 +504,59 @@ There is one more thing we might want to index on which is the sorting part
     created_at DESC
 ```
 
-However with the addition of this index, only ~3% performance gain is achieved, which indicates this index is optional.
+##### index for order
+```
+CREATE INDEX IF NOT EXISTS idx_notification_partial
+    ON public.notification USING btree
+    (type COLLATE pg_catalog."default" ASC NULLS LAST, param_id COLLATE pg_catalog."default" ASC NULLS LAST, created_at DESC NULLS FIRST)
+    TABLESPACE pg_default
+    WHERE is_removed = false;
+```
 
-## Max Heap
+However with the addition of this index, only ~5% performance gain is achieved, but since we are trying to optimize response time for now, this index is included.
+
+## Min Heap
 
 Collecting from different channels result in a list with uncertain length, but we do have a count limit specified in api parameter.
 
 A sort would require O(n*log(n)), but we don't need to do sorting here to meet the requirement, as we only need the ```count``` latest notifications.
 
-First we implement a max heap for ```Notif```.
+First we implement a min heap on ```created_at``` for notification type.
 
 ```
 type NotifHeap []*Notif
 
 func (h NotifHeap) Len() int { return len(h) }
 
-// Reverse the logic to create a max-heap.
-func (h NotifHeap) Less(i, j int) bool { return h[i].CreateAt > h[j].CreateAt }
+func (h NotifHeap) Less(i, j int) bool { return h[i].CreateAt < h[j].CreateAt }
 
-func (h NotifHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *NotifHeap) Swap(i, j int) { (*h)[i], (*h)[j] = (*h)[j], (*h)[i] }
 
 func (h *NotifHeap) Push(x interface{}) {
 	*h = append(*h, x.(*Notif))
-	for i := h.Len() - 1; i != 0 && h.Less((i-1)/2, i); i = (i - 1) / 2 {
-		h.Swap((i-1)/2, i)
+	for i := h.Len() - 1; i > 0 && h.Less(i, (i-1)/2); i = (i - 1) / 2 {
+		h.Swap(i, (i-1)/2)
 	}
 }
 
 func (h *NotifHeap) Pop() interface{} {
-	x := (*h)[h.Len()-1]
+	if h.Len() == 0 {
+		return nil
+	}
+	x := (*h)[0]
+	(*h)[0] = (*h)[h.Len()-1]
 	*h = (*h)[:h.Len()-1]
+	for i := 0; i < h.Len(); {
+		if i*2+2 < h.Len() && h.Less(i*2+2, i*2+1) && h.Less(i*2+2, i) {
+			h.Swap(i, i*2+2)
+			i = i*2 + 2
+		} else if i*2+1 < h.Len() && h.Less(i*2+1, i) {
+			h.Swap(i, i*2+1)
+			i = i*2 + 1
+		} else {
+			break
+		}
+	}
 	return x
 }
 ```
@@ -544,7 +570,7 @@ Then in ```notification aggregator```, we maintain the heap during collection of
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, nil
+			return nil, nil // parent thread is terminated before child thread finished, therefore child is not expected to return value
 		default:
 		}
 
@@ -559,11 +585,13 @@ Then in ```notification aggregator```, we maintain the heap during collection of
 	}
 	...
 
-	for len(h) > 0 {
-		nt := h.Pop().(*models.Notif)
+	notifications := models.NotifHeap{}
+	for p := h.Pop(); p != nil; p = h.Pop() {
+		var p *models.Notif = p.(*models.Notif)
 		...
-		notifications = append(notifications, nt)
+		notifications = append(notifications, p)
 	}
+	notifications.Reverse()
 ```
 
 Since build heap is O(n), and iterating over a heap with ```count``` elements is only O(count), we achieve O(n+count) complexity for this logic instead of O(n*log(n)).
