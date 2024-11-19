@@ -146,13 +146,13 @@ So we adopt a mixed solution, for most services we direct them to use in cluster
 
 This save us ~75% caching fee.
 
-### Rabbitmq or PubSub
+## Rabbitmq or PubSub
 
 The comparison of RabbitMQ and GCP PubSub is quite similar to caching, where the former is much cheaper but lack monitoring dashboards, we also endup a mixed solution at the end.
 
 This also saves us ~60% fee for message queue cost.
 
-### Serverless
+## Serverless
 
 Some of the services don't always need to be alive, like video compression or broadcasting messages.
 
