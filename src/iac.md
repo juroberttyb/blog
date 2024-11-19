@@ -1,16 +1,18 @@
-# How We Save Over 50% Fee by using IAC for Cloud Infrastructure and CICD
+# How We Introduce IAC and CICD
 
 <p style="font-weight: bold">Feb 7, 2024 ~ Present (Nov 19), 2024</p>
 
 ## Result
 
-This is a post on how we save over 50% fee for our infra including 
+This is a post on how we introduce IAC and CICD, which also saves us around 50% fee on our cloud infra.
 
-- <b>GCP Kubernetes Engine</b>
-- <b>GCP Networking</b>
+Tech Used
+- <b>Terraform</b>
+- <b>Helm</b>
+- <b>GCP</b>
 - <b>Github Action</b>
 
-##### billing information
+<!-- ##### much lower bill
 <img style="
   display: block;
   margin-left: auto;
@@ -18,7 +20,7 @@ This is a post on how we save over 50% fee for our infra including
   margin-top: 32px;
   margin-bottom: 32px;
   border-radius: 12px;
-" src="./img/gcp_cost_trend.png"></img>
+" src="./img/gcp_cost_trend.png"></img> -->
 
 ## Issue Description
 
@@ -41,15 +43,12 @@ Note that we have changed bill account before so the length is shorter, it is ev
 ## Our apporaches
 
 1) [GCP Autopilot K8S](#gcp-autopilot-k8s)
-6) [CDN](#cdn)
 2) [IAC](#iac)
+6) [CDN](#cdn)
 3) [CICD](#cicd)
 6) [In Cluster Caching](#in-cluster-caching)
-6) [Rabbitmq or PubSub](#rabbitmq-vs-pubsub)
-4) [Scaling Strategy](#scaling-strategy)
-4) [Pod Spec](#pod-spec)
+6) [Rabbitmq or PubSub](#rabbitmq-or-pubsub)
 5) [Serverless](#serverless)
-6) [Future Work](#future-work)
 
 ## GCP Autopilot K8S
 
@@ -64,23 +63,13 @@ For example
 - k8s cluster version upgrades
 - ...
 
+By carefully configuring these parameters, it is likely we would achieve a better cost-resource balance, however the business of our company is not at a scale to afford a headcount to handle this.
 
+The adoption of GCP Autopilot cluster help us configure these parameters automatically and save our budget, however this would require a full migration of all our services.
 
-##### legacy code which contains a loop of sql queries
-```
-for idx, user := range users {
-    ...
-    users[idx].Specialties, err = models.Specialty.GetByUser(gormDB, user.UserId, true)
-    if err != nil {
-      return nil, err
-    }
-    ...
-}
-```
+Normally, iac is introduced best at start, we think service migration is the second best timing for introducing it.
 
-Here we could see a db connection passed down a for loop, not a good sign.
-
-By looking into traces, we could find the call at the bottom
+Luckily, we found a terraform script for GCP Autopilot cluster.
 
 <img style="
   display: block;
@@ -89,67 +78,21 @@ By looking into traces, we could find the call at the bottom
   margin-top: 32px;
   margin-bottom: 32px;
   border-radius: 12px;
-" src="./img/notif_trace.png"></img>
+" src="./img/autopilot_terra.png"></img>
 
-Looking down the code, we findout that this loop create a new db connection each iteration, so we start to refactor this into a single query
+After some configuration and updates to the helm charts, we now have over 10 clusters ready for deployment.
 
-```
-// GetByUser ...
-func (s *specialty) GetByUser(db *gorm.DB, userID string, latestOnly bool) ([]SpecialtyIntf, error) {
-    ...
-    err := db.Model(s).
-        Where("user_id = ?", userID).
-        Order("ordinal ASC, updated_at DESC").
-        Find(&specialties).Error
-    ...
-}
-```
+## IAC
 
-One familiar with Golang may notice the legacy code uses Gorm to query database, since we as a team are moving to Sqlx, a new implementation would use Sqlx instead.
+IAC, if for nothing else, provide as a doc for infra itself, so we decide to go in this path.
 
-After converting a loop of sql queries to a single one, we now have the following implementation which retrieve a list of speciaties for a list of users.
+During the migration, we discover a whole lot of deprecated services and remove them all, here we achieve the first cost down. (although being a cheap one, this happens quite often without IAC)
 
-##### aggregator/user.go
-```
-...
-specialties, err := specialtyStore.GetUsersSpecialties(ctx, uids)
-...
-```
+Next, during the upgrade, we found our deployment scripts are failing to provision new services due to ```horizontal scaling error```, which is caused by no longer supported k8s api version used in our chart.
 
-##### store/specialty.go
-```
-func (s *specialtyStore) GetUsersSpecialties(ctx context.Context, userIDs []string) ([]*models.Specialty, error) {
-    
-  query := `
-        SELECT 
-            id,
-            application_id, 
-            user_id, 
-            specialty, 
-            ordinal, 
-            created_at, 
-            updated_at, 
-            deleted_at, 
-            badge 
-        FROM 
-            public.specialties 
-        WHERE 
-            user_id = ANY($1) 
-        ORDER BY 
-            ordinal ASC, 
-            updated_at DESC
-    `
+After more investigation, we found that although much of our service is deployed successfully to standard clusters, they never scaled correctly since a service can be provisioned without ```horizontal scaler```.
 
-    ...
-    err := db.Select(&specialties, query, pq.StringArray(userIDs))
-    ...
-}
-```
-
-Here we achieve the first significant acceleration! (a naive one I know)
-
-We could now see the time consumed in ```aggregator.usersaggregator``` is down <b>from 357.4ms to 21.7ms</b>.
-
+##### workload can't scale without a working scaler
 <img style="
   display: block;
   margin-left: auto;
@@ -157,9 +100,62 @@ We could now see the time consumed in ```aggregator.usersaggregator``` is down <
   margin-top: 32px;
   margin-bottom: 32px;
   border-radius: 12px;
-" src="./img/query_loop.png"></img>
+" src="./img/failed_horizon.png"></img>
 
+Without a working scaler, whatever the current pods are specified on service provisioning would be the one lasted forever.
 
-## Removes Worst-Case
+After fixing it, we save ourself ~60% of Kubernetes Engine fee. (Sounds really dumb but we really only have a handful of dev back then.)
 
-There is one more bottleneck which we could improve, as we could see <b>store.me.getmynotifs</b> is a heavy sql query.
+With the introduction of IAC we now also are able to provision/destroy Dev and Staging clusters much more easily.
+
+## CDN
+
+The introduction of CDN mainly comes from an event we met before, which causes our networking fee to tripled for two months.
+
+CDN not only allow faster access to media content, it also protects the storage endpoints from attackers, since its fee is much lower in the case of heavy request to the same content.
+
+We configure it for 5 of our cloud storages and restore networking fee to its normal level, as could be seen 
+
+##### networking fee (October~December 2023)
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/gcp_cost_trend.png"></img>
+
+## CICD
+
+For CD, with GCP ```Workload Identity Federation```, we can authorize github action to directly deploy to GCP clusters.
+
+Since we adopt a microservice architecture, this has saved us a whole lot of time!
+
+For CI, we use golang mockery to generate dependency mockings.
+
+Since integration tests are hard to maintain, we leave it out for now and consider this better handled with QA team.
+
+## In Cluster Caching
+
+GCP provides caching on the project level, which could be accessed across clusters, it is however, quite expensive.
+
+The main drawback of using in cluster caching as far as we have concerned have been the lack of monitoring dashboards provided by GCP.
+
+So we adopt a mixed solution, for most services we direct them to use in cluster caching, for performance critical services we direct them to use GCP caching solution for better monitoring.
+
+This save us ~75% caching fee.
+
+### Rabbitmq or PubSub
+
+The comparison of RabbitMQ and GCP PubSub is quite similar to caching, where the former is much cheaper but lack monitoring dashboards, we also endup a mixed solution at the end.
+
+This also saves us ~60% fee for message queue cost.
+
+### Serverless
+
+Some of the services don't always need to be alive, like video compression or broadcasting messages.
+
+Instead of containerizing those service and make them a workload in Kubernetes Engine, we could instead deploy them as serverless services using services like ```GCP cloud run```.
+
+After moving them out of clusters, we save another 10% on Kubernetes Engine fees for ourselve.
