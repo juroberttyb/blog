@@ -19,6 +19,16 @@ This is a post on how we optimize notification api response time from
   border-radius: 12px;
 " src="./img/notif_final_trace.png"></img>
 
+##### notification list
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/notif_screenshot.jpg"></img>
+
 ## Issue Description
 
 A notification api is responsible for returning a user's notifications, such as new message, post response, new post..., but it takes over 100s to get the response in some cases and the overall response time is too long.

@@ -12,7 +12,7 @@ This is a blog recording some interesting problems I faced or am thinking about,
   margin-top: 32px;
   margin-bottom: 32px;
   border-radius: 12px;
-" src="./img/mog.jpeg"></img>
+" src="./img/panda.jpg"></img>
 
 Here is a json response which you would get if you make a request to Robert when he is a server.
 
@@ -72,4 +72,4 @@ Anyway, happy to have you here, sincerely.
   margin-top: 32px;
   margin-bottom: 32px;
   border-radius: 12px;
-" src="./img/panda.jpg"></img>
+" src="./img/mog.jpeg"></img>
