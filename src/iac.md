@@ -1,18 +1,14 @@
-# How We Introduce IAC and CICD
+# Social App Cloud Infra, IAC and CICD
 
 <p style="font-weight: bold">Feb 7, 2024 ~ Present (Nov 19), 2024</p>
 
 ## Result
 
-This is a post on how we introduce IAC and CICD, which also saves us around 50% fee on our cloud infra.
+This is a post on Social App Cloud Infra, IAC and CICD we use for our social app.
 
-Tech Used
-- <b>Terraform</b>
-- <b>Helm</b>
-- <b>GCP</b>
-- <b>Github Action</b>
+Below are two infra graphs made by our CTO - Jonas Chen.
 
-<!-- ##### much lower bill
+##### Infra 2024
 <img style="
   display: block;
   margin-left: auto;
@@ -20,13 +16,31 @@ Tech Used
   margin-top: 32px;
   margin-bottom: 32px;
   border-radius: 12px;
-" src="./img/gcp_cost_trend.png"></img> -->
+" src="./img/infra_current.png"></img>
 
-## Issue Description
+##### Infra 2025
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/infra_2025.png"></img>
 
-As a fast moving startup, fast iterating different products, we often forget to clear out some infra we provisioned during the process, or more fairly, does not have the luxury to take care of them in such a hurry.
+## Tech Stack
 
-As our product matures and users growing, cloud infra fee start climbing and attract our attention as it is now almost tripled over the years.
+1) [GCP Autopilot K8S](#gcp-autopilot-k8s)
+2) [IAC](#iac)
+3) [CDN](#cdn)
+4) [CICD](#cicd)
+5) [In Cluster Caching](#in-cluster-caching)
+6) [Rabbitmq or PubSub](#rabbitmq-or-pubsub)
+7) [Serverless](#serverless)
+
+## GCP Autopilot K8S
+
+As a small team of devs, we backend devs often are required to handle our own infra in the early days, this often leads to unmanaged resource provisioning and removal, not to mention adjusting resource according to actual traffics.
 
 ##### growing bill (the last month is ongoing so not the highest)
 <img style="
@@ -37,22 +51,6 @@ As our product matures and users growing, cloud infra fee start climbing and att
   margin-bottom: 32px;
   border-radius: 12px;
 " src="./img/gcp_cost_trend.png"></img>
-
-Note that we have changed bill account before so the length is shorter, it is even much lower earlier.
-
-## Our apporaches
-
-1) [GCP Autopilot K8S](#gcp-autopilot-k8s)
-2) [IAC](#iac)
-6) [CDN](#cdn)
-3) [CICD](#cicd)
-6) [In Cluster Caching](#in-cluster-caching)
-6) [Rabbitmq or PubSub](#rabbitmq-or-pubsub)
-5) [Serverless](#serverless)
-
-## GCP Autopilot K8S
-
-As a small team of devs, we backend devs often are required to handle our own infra in the early days, this often leads to unmanaged resource provisioning and removal, not to mention adjusting resource according to actual traffics.
 
 For example
 
