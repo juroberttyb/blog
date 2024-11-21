@@ -387,7 +387,7 @@ func ... {
 
 	getterGroup.Add(1)
 	funcGroup.Add(1)
-	go func() {
+	go func(ctx context.Context) {
 		defer getterGroup.Done()
 		defer funcGroup.Done()
 		users, err := models.GetUsers(ctx, userIds)
@@ -403,7 +403,7 @@ func ... {
 			}
 			userCh <- &users[i]
 		}
-	}()
+	}(ctx)
 
 	go func() {
 		getterGroup.Wait()
@@ -411,7 +411,7 @@ func ... {
 	}()
 
 	funcGroup.Add(1)
-	go func() {
+	go func(ctx context.Context) {
 		defer funcGroup.Done()
       // this channel consumer thread would also die if any error returned from getter
       // since parent thread is always waiting
@@ -423,7 +423,7 @@ func ... {
 		for _, u := range users {
 			m[u.UserId] = u
 		}
-	}()
+	}(ctx)
 
 	go func() {
 		funcGroup.Wait()
