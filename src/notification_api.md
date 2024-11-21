@@ -369,6 +369,76 @@ Here we could notice 3 major issues
 
       this patterns ensure we don't get zombie threads from parent routines failing before child routines.
 
+  One important note, ideally, for the fastest response time possible
+  - <b>the function should not contain any unparalleled logic within except error collection</b>
+
+  This is because in the case of any error returned from child threads, the <b>parent thread should catch it as fast as possible instead of running sequencial logics</b>.
+
+  ##### The right approach
+  ```
+func ... {
+	m := make(map[string]*models.UserSimple)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var getterGroup, funcGroup sync.WaitGroup
+	userCh, errCh := make(chan *models.UserSimple), make(chan error)
+
+	getterGroup.Add(1)
+	funcGroup.Add(1)
+	go func() {
+		defer getterGroup.Done()
+		defer funcGroup.Done()
+		users, err := models.GetUsers(ctx, userIds)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		for i := range users {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			userCh <- &users[i]
+		}
+	}()
+
+	go func() {
+		getterGroup.Wait()
+		close(userCh)
+	}()
+
+	funcGroup.Add(1)
+	go func() {
+		defer funcGroup.Done()
+      // this channel consumer thread would also die if any error returned from getter
+      // since parent thread is always waiting
+		users, err := AggregateUsers(ctx, selfId, userIds, userCh)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		for _, u := range users {
+			m[u.UserId] = u
+		}
+	}()
+
+	go func() {
+		funcGroup.Wait()
+		close(errCh)
+	}()
+
+	if err, exist := <-errCh; exist && err != nil {
+		if exist {
+			return nil, err
+		}
+	}
+	return m, nil
+}
+  ```
+
   So, after the adoption of go routines, waitGroup, withCancel pattern, and err channel, we have better appoaches to the 3 issues and achieve a much better result. 
 
 ##### before <-> after
