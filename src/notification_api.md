@@ -1,13 +1,13 @@
 # It takes over 100s to get a notification list
 
-<p style="font-weight: bold">Oct 28, 2024 ~ Nov 18, 2024</p>
+<p style="font-weight: bold">Oct 28, 2024 ~ Nov 21, 2024</p>
 
 ## Result
 
 This is a post on how we optimize notification api response time from 
 
 - <b>worst case over 100s to under 1s</b>
-- <b>25% acceleration in average response time</b>
+- <b>28% acceleration in average response time</b>
 
 ##### trace before <-> trace after
 <img style="
