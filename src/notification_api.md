@@ -689,4 +689,16 @@ What quickly comes to mind that need to be considered when adding caching
   2) update to cached value on events like notification list insert/delete/update...
   3) distributed redis lock or database lock to avoid race condition across pods
 
+Also, instead of doing one query to get all notification types, one alternative is to parallel them into different queries.
 
+##### parallel query
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/separate_query_by_type.png"></img>
+
+However this would spawned ~10 sql queries at once, which would require further comparison and more data to decide whether to do this or not.
