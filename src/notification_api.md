@@ -711,7 +711,7 @@ Then in ```notification aggregator```, we maintain the heap during collection of
 	notifications.Reverse()
 ```
 
-Since building a heap is ```O(n)```, and iteratatively retrieving data from a heap with ```c=count``` elements is ```O(c*log(c))```, we achieve ```O(n + c*log(c))``` complexity for this logic instead of ```O(n*log(n))```.
+Since building a heap is ```O(n)```, and iteratatively retrieving data from a heap with ```c=count``` elements is ```O(c*log(c))```, we achieve ```O(n + c*log(c))``` complexity for this logic instead of ```O(n*log(n))```, where ```c <= n```.
 
 This simple improvement allows us to more effectively collect notifications from different go routines and <b>leads us to ~40% acceleration</b> in ```notification aggregator```!
 
