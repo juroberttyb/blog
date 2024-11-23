@@ -255,9 +255,46 @@ With the use of ```DISTINCT ON (notification.type, param_id)```, we could now re
 			) AS r
 			ORDER BY
 				r.created_at DESC
-			LIMIT 
-				?
    ```
+
+Still, separated small queries are often preferred over having a single big query, so we could parallel them into different queries.
+
+##### single query vs separated queries
+<img style="
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 32px;
+  margin-bottom: 32px;
+  border-radius: 12px;
+" src="./img/separate_query_by_type.png"></img>
+
+##### separated small query
+```
+		SELECT * 
+    FROM
+		(
+			SELECT
+				DISTINCT ON
+				(
+					param_id
+				)
+				*
+			FROM
+				notification
+			WHERE
+				is_removed=false
+				AND
+				type=?
+			ORDER BY
+				param_id,
+				created_at DESC
+		) AS r
+		ORDER BY
+			r.created_at DESC
+```
+
+This modification help remove worst case scenario and allow for better parallelization for later chapter.
 
 ## Parallelization
 
@@ -689,16 +726,8 @@ What quickly comes to mind that need to be considered when adding caching
   2) update to cached value on events like notification list insert/delete/update...
   3) distributed redis lock or database lock to avoid race condition across pods
 
-Also, instead of doing one query to get all notification types, one alternative is to parallel them into different queries.
+##### note
+- parallel, deadline or cancel? > flush msgs every 5 seconds, time function, deadline context
+- if a user calls notification api he should already have user object and be able to retrieve fields like selfID gender isAdmin userCreatedAt, jwt auth revise (put necessary attributes like category, isAdmin, gender… in jwt token instead of using model.GetMe for all apis), api parameter improvement (string -> int…), pagination (retrieve full list), find the position olf next symbol with heapify or hashtable scan for cached whole list O(n) -> O(log(n))
+- levelized caching (parallel get notif by type, update on insertion), cross users post/event caching
 
-##### parallel query
-<img style="
-  display: block;
-  margin-left: auto;
-  margin-right: auto;
-  margin-top: 32px;
-  margin-bottom: 32px;
-  border-radius: 12px;
-" src="./img/separate_query_by_type.png"></img>
-
-However this would spawned ~10 sql queries at once, which would require further comparison and more data to decide whether to do this or not.
