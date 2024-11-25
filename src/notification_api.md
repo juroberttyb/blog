@@ -727,7 +727,7 @@ What quickly comes to mind that need to be considered when adding caching
   3) distributed redis lock or database lock to avoid race condition across pods
 
 ##### note
-- parallel, deadline or cancel? > flush msgs every 5 seconds, time function, deadline context
+- remove worst case and add parallel
 - if a user calls notification api he should already have user object and be able to retrieve fields like selfID gender isAdmin userCreatedAt, jwt auth revise (put necessary attributes like category, isAdmin, gender… in jwt token instead of using model.GetMe for all apis), api parameter improvement (string -> int…), pagination (retrieve full list), find the position olf next symbol with heapify or hashtable scan for cached whole list O(n) -> O(log(n))
 - levelized caching (parallel get notif by type, update on insertion), cross users post/event caching
 
