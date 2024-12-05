@@ -5,5 +5,4 @@
 - [In-App Notification for Over 100K Devices in 1s](./fcm_microservice.md)
 - [Social App Cloud Infra, IAC and CICD](./iac.md)
 - [Maintainable and Meaningful Unit Testing](./unit_test.md)
-- [why you SHOULD NOT be a founding engineer](./not_founding.md)
 
