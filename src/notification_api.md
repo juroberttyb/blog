@@ -7,7 +7,7 @@
 This is a post on how we optimize notification api response time from 
 
 - <b>worst case over 100s to under 1s</b>
-- <b>28% acceleration in average response time</b>
+- <b>31% acceleration in average response time</b>
 
 ##### trace before <-> trace after
 <img style="
@@ -51,7 +51,8 @@ We find that the db query retrieving a list of notifications for a given user is
 3) [Parallelization](#parallelization)
 4) [SQL Index](#sql-index)
 5) [Min Heap](#min-heap)
-6) [Future Work](#future-work)
+6) [Func Cache](#func-cache)
+7) [Future Work](#future-work)
 
 ## Refactor Loop Queries
 
@@ -714,6 +715,64 @@ Then in ```notification aggregator```, we maintain the heap during collection of
 Since building a heap is ```O(n)```, and iteratatively retrieving data from a heap with ```c=count``` elements is ```O(c*log(c))```, we achieve ```O(n + c*log(c))``` complexity for this logic instead of ```O(n*log(n))```, where ```c <= n```.
 
 This simple improvement allows us to more effectively collect notifications from different go routines and <b>leads us to ~40% acceleration</b> in ```notification aggregator```!
+
+## Func Cache
+
+On the first thought, to minimize queries to sql database, we could use redis caching to cache the returned values from sql queries, which is reasonable.
+
+But we can do more than that, which is ```in process function caching```.
+
+The flow looks like this when we make a sql query to a database.
+
+##### flow without data caching
+```
+sql query 
+-> database 
+-> return data to api server 
+-> api server process it and return it to client
+```
+
+With redis caching, the flow would look like this.
+
+##### flow with data caching but no func caching
+```
+check whether the desired result already exist in redis caching 
+-> return if exists, continue otherwise 
+-> sql query 
+-> database 
+-> return data to api server 
+-> api server cache the result 
+-> api server process it and return it to client
+```
+
+While this is one way to improve response time, we can do more.
+
+In the api server itself, making request to redis caching is slower than having a copy of data in the server itself, however this makes the server itself a caching entity which is not optimize for an api server, assuming under fixed hardware resources (cpu, mem, disk...).
+
+Instead of caching the data itself, what we could do is to <b>cache the function call itself</b>.
+
+Therefore we implemented a golang lib named ```group```.
+
+##### Group
+```
+Group implements logic level caching by using func f() and its params x as key, the value is cached in f(x) <-> y mapping, where y=f(x).
+
+Consecutive calls to f(x) receive result from the first call instead of running again.
+```
+
+This way, we obtain a new flow, which minimize the calls to redis caching and sql database, optimizing response time furthermore.
+
+##### flow with both data and func caching
+```
+check whether f(x) is already called, if so, wait for y and return, continue otherwise 
+-> check whether the desired result already exist in redis caching 
+-> return if exists, continue otherwise 
+-> sql query 
+-> database 
+-> return data to api server 
+-> api server cache the result 
+-> api server process it and return it to client
+```
 
 ## Future Work
 
